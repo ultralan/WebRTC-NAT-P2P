@@ -51,8 +51,7 @@ function App() {
     }
 
     ws.onclose = () => {
-      setStatus('连接已断开')
-      setConnected(false)
+      setStatus('信令服务器已断开 (WebRTC P2P连接仍然工作)')
     }
   }
 

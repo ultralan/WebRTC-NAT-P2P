@@ -59,20 +59,27 @@ func main() {
 		},
 	}
 
-	// 处理消息
-	for {
-		var msg Message
-		err := conn.ReadJSON(&msg)
-		if err != nil {
-			log.Println("Read error:", err)
-			break
-		}
+	// 在goroutine中处理信令消息
+	go func() {
+		for {
+			var msg Message
+			err := conn.ReadJSON(&msg)
+			if err != nil {
+				log.Println("Signaling connection closed:", err)
+				log.Println("WebRTC P2P connection will continue working...")
+				break
+			}
 
-		switch msg.Type {
-		case "offer":
-			go handleOffer(conn, &msg, config)
+			switch msg.Type {
+			case "offer":
+				go handleOffer(conn, &msg, config)
+			}
 		}
-	}
+	}()
+
+	// 保持程序运行，让WebRTC连接继续工作
+	log.Println("Device is running. Press Ctrl+C to exit.")
+	select {}
 }
 
 func handleOffer(conn *websocket.Conn, msg *Message, config webrtc.Configuration) {
