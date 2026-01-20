@@ -83,39 +83,41 @@ func handleOffer(conn *websocket.Conn, msg *Message, config webrtc.Configuration
 		return
 	}
 
-	// 创建数据通道
-	dataChannel, err := peerConnection.CreateDataChannel("data", nil)
-	if err != nil {
-		log.Println("Failed to create data channel:", err)
-		return
-	}
+	// 监听数据通道（由frontend创建）
+	peerConnection.OnDataChannel(func(d *webrtc.DataChannel) {
+		log.Printf("Data channel '%s' received from frontend\n", d.Label())
 
-	dataChannel.OnOpen(func() {
-		log.Println("Data channel opened - Device backend ready to handle requests")
-	})
+		d.OnOpen(func() {
+			log.Println("Data channel opened - Device backend ready to handle requests")
+		})
 
-	dataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
-		// 解析API请求
-		var req APIRequest
-		err := json.Unmarshal(msg.Data, &req)
-		if err != nil {
-			log.Printf("Failed to parse request: %s\n", err)
-			return
-		}
+		d.OnMessage(func(msg webrtc.DataChannelMessage) {
+			// 解析API请求
+			var req APIRequest
+			err := json.Unmarshal(msg.Data, &req)
+			if err != nil {
+				log.Printf("Failed to parse request: %s\n", err)
+				return
+			}
 
-		log.Printf("Received API request: %s %s\n", req.Method, req.Path)
+			log.Printf("Received API request: %s %s\n", req.Method, req.Path)
 
-		// 处理请求
-		resp := handleAPIRequest(&req)
+			// 处理请求
+			resp := handleAPIRequest(&req)
 
-		// 发送响应
-		respJSON, err := json.Marshal(resp)
-		if err != nil {
-			log.Printf("Failed to marshal response: %s\n", err)
-			return
-		}
+			// 发送响应
+			respJSON, err := json.Marshal(resp)
+			if err != nil {
+				log.Printf("Failed to marshal response: %s\n", err)
+				return
+			}
 
-		dataChannel.Send(respJSON)
+			d.Send(respJSON)
+		})
+
+		d.OnClose(func() {
+			log.Println("Data channel closed")
+		})
 	})
 
 	// 处理ICE候选

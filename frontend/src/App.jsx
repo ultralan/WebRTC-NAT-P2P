@@ -37,11 +37,11 @@ function App() {
       const msg = JSON.parse(event.data)
 
       if (msg.type === 'answer') {
-        const answer = JSON.parse(msg.data)
+        const answer = msg.data
         await pcRef.current.setRemoteDescription(answer)
         setStatus('WebRTC连接已建立')
       } else if (msg.type === 'candidate') {
-        const candidate = JSON.parse(msg.data)
+        const candidate = msg.data
         await pcRef.current.addIceCandidate(candidate)
       }
     }
@@ -104,7 +104,7 @@ function App() {
         wsRef.current.send(JSON.stringify({
           type: 'candidate',
           to: deviceId,
-          data: JSON.stringify(event.candidate.toJSON())
+          data: event.candidate.toJSON()
         }))
       }
     }
@@ -117,7 +117,7 @@ function App() {
     wsRef.current.send(JSON.stringify({
       type: 'offer',
       to: deviceId,
-      data: JSON.stringify(offer)
+      data: offer
     }))
   }
 
