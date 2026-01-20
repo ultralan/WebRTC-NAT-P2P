@@ -83,13 +83,23 @@ function App() {
           // API响应
           setApiResponse(response)
           setLoading(false)
-          addMessage('API响应', `${response.status} - ${JSON.stringify(response.data)}`)
+          try {
+            addMessage('API响应', `${response.status} - ${JSON.stringify(response.data)}`)
+          } catch (e) {
+            addMessage('API响应', `${response.status} - [数据无法序列化]`)
+          }
         } else {
           // 普通消息
-          addMessage('设备', event.data)
+          const message = event.data instanceof ArrayBuffer
+            ? `[二进制数据: ${event.data.byteLength} 字节]`
+            : String(event.data)
+          addMessage('设备', message)
         }
       } catch (e) {
-        addMessage('设备', event.data)
+        const message = event.data instanceof ArrayBuffer
+          ? `[二进制数据: ${event.data.byteLength} 字节]`
+          : String(event.data)
+        addMessage('设备', message)
       }
     }
 
@@ -134,18 +144,27 @@ function App() {
   }
 
   const callAPI = (path, params = {}) => {
-    if (!dataChannelRef.current) return
-
-    setLoading(true)
-    const request = {
-      id: Math.random().toString(36).substr(2, 9),
-      method: 'GET',
-      path: path,
-      params: params
+    if (!dataChannelRef.current) {
+      alert('数据通道未连接')
+      return
     }
 
-    dataChannelRef.current.send(JSON.stringify(request))
-    addMessage('API请求', `${request.method} ${path}`)
+    try {
+      setLoading(true)
+      const request = {
+        id: Math.random().toString(36).substr(2, 9),
+        method: 'GET',
+        path: path,
+        params: params
+      }
+
+      dataChannelRef.current.send(JSON.stringify(request))
+      addMessage('API请求', `${request.method} ${path}`)
+    } catch (error) {
+      console.error('API调用失败:', error)
+      setLoading(false)
+      alert(`API调用失败: ${error.message}`)
+    }
   }
 
   return (
@@ -262,7 +281,13 @@ function App() {
           {apiResponse.error && <p style={{ color: 'red' }}><strong>错误:</strong> {apiResponse.error}</p>}
           <p><strong>数据:</strong></p>
           <pre style={{ backgroundColor: '#fff', padding: '10px', overflow: 'auto' }}>
-            {JSON.stringify(apiResponse.data, null, 2)}
+            {(() => {
+              try {
+                return JSON.stringify(apiResponse.data, null, 2)
+              } catch (e) {
+                return `Error: ${e.message}`
+              }
+            })()}
           </pre>
         </div>
       )}
