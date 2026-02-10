@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import dataChannelFetch from './dataChannelFetch'
 
 function App() {
   const [connected, setConnected] = useState(false)
@@ -15,6 +16,9 @@ function App() {
   const clientId = useRef('frontend-' + Math.random().toString(36).substr(2, 9))
 
   useEffect(() => {
+    // 自动连接信令服务器和设备
+    connectToSignaling()
+
     return () => {
       if (wsRef.current) {
         wsRef.current.close()
@@ -26,11 +30,22 @@ function App() {
   }, [])
 
   const connectToSignaling = () => {
+    // 避免重复连接
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      console.log('Already connected to signaling server')
+      return
+    }
+
     const ws = new WebSocket(`ws://8.138.247.82:8888/ws?id=${clientId.current}&type=frontend`)
 
     ws.onopen = () => {
       setStatus('已连接到信令服务器')
       wsRef.current = ws
+
+      // 自动连接设备
+      setTimeout(() => {
+        connectToDevice()
+      }, 500)
     }
 
     ws.onmessage = async (event) => {
@@ -38,11 +53,18 @@ function App() {
 
       if (msg.type === 'answer') {
         const answer = msg.data
-        await pcRef.current.setRemoteDescription(answer)
-        setStatus('WebRTC连接已建立')
+        // 检查 PeerConnection 状态，避免重复设置
+        if (pcRef.current && pcRef.current.signalingState === 'have-local-offer') {
+          await pcRef.current.setRemoteDescription(answer)
+          setStatus('正在建立数据通道...')
+        } else {
+          console.log('Ignoring answer, wrong state:', pcRef.current?.signalingState)
+        }
       } else if (msg.type === 'candidate') {
         const candidate = msg.data
-        await pcRef.current.addIceCandidate(candidate)
+        if (pcRef.current) {
+          await pcRef.current.addIceCandidate(candidate)
+        }
       }
     }
 
@@ -56,6 +78,12 @@ function App() {
   }
 
   const connectToDevice = async () => {
+    // 避免重复连接
+    if (pcRef.current && pcRef.current.connectionState !== 'closed') {
+      console.log('Already connecting/connected to device')
+      return
+    }
+
     setStatus('正在连接设备...')
 
     // 创建PeerConnection
@@ -69,17 +97,31 @@ function App() {
     const dataChannel = pc.createDataChannel('data')
     dataChannelRef.current = dataChannel
 
+    console.log('DataChannel created, readyState:', dataChannel.readyState)
+
     dataChannel.onopen = () => {
+      console.log('DataChannel opened!')
       setConnected(true)
       setStatus('已连接到设备')
       addMessage('系统', '数据通道已打开')
+
+      // 设置 dataChannelFetch 的 dataChannel
+      dataChannelFetch.setDataChannel(dataChannel)
+      addMessage('系统', 'DataChannel Fetch 已就绪')
     }
 
     dataChannel.onmessage = (event) => {
       try {
         const response = JSON.parse(event.data)
+
+        // 检查是否是 HTTP 网关响应（有 requestId 字段）
+        if (response.requestId) {
+          // HTTP 网关响应，由 dataChannelFetch 处理，这里不处理
+          return
+        }
+
         if (response.id) {
-          // API响应
+          // 旧的 API 响应
           setApiResponse(response)
           setLoading(false)
           try {
@@ -100,6 +142,12 @@ function App() {
           : String(event.data)
         addMessage('设备', message)
       }
+    }
+
+    dataChannel.onerror = (error) => {
+      console.error('DataChannel error:', error)
+      setStatus('数据通道错误')
+      addMessage('错误', '数据通道连接失败')
     }
 
     dataChannel.onclose = () => {
@@ -166,37 +214,55 @@ function App() {
     }
   }
 
+  // 使用 dataChannelFetch 调用真实的 HTTP API
+  const callHTTPAPI = async (url, method = 'GET', body = null) => {
+    if (!connected) {
+      alert('数据通道未连接')
+      return
+    }
+
+    try {
+      setLoading(true)
+      addMessage('HTTP请求', `${method} ${url}`)
+
+      let response
+      if (method === 'GET') {
+        response = await dataChannelFetch.get(url)
+      } else if (method === 'POST') {
+        response = await dataChannelFetch.post(url, body)
+      } else if (method === 'PUT') {
+        response = await dataChannelFetch.put(url, body)
+      } else if (method === 'DELETE') {
+        response = await dataChannelFetch.delete(url)
+      }
+
+      const data = await response.json()
+
+      setApiResponse({
+        id: response.requestId,
+        status: response.status,
+        data: data
+      })
+
+      addMessage('HTTP响应', `${response.status} - ${JSON.stringify(data).substring(0, 100)}`)
+      setLoading(false)
+    } catch (error) {
+      console.error('HTTP API调用失败:', error)
+      setLoading(false)
+      addMessage('错误', error.message)
+      alert(`HTTP API调用失败: ${error.message}`)
+    }
+  }
+
   return (
     <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
       <h1>WebRTC Frontend</h1>
 
       <div style={{ marginBottom: '20px' }}>
-        <p>状态: <strong>{status}</strong></p>
+        <p>状态: <strong style={{ color: connected ? 'green' : 'orange' }}>{status}</strong></p>
         <p>客户端ID: {clientId.current}</p>
-      </div>
-
-      <div style={{ marginBottom: '20px' }}>
-        <input
-          type="text"
-          value={deviceId}
-          onChange={(e) => setDeviceId(e.target.value)}
-          placeholder="设备ID"
-          style={{ padding: '8px', marginRight: '10px', width: '200px' }}
-        />
-        <button
-          onClick={connectToSignaling}
-          disabled={wsRef.current !== null}
-          style={{ padding: '8px 16px', marginRight: '10px' }}
-        >
-          连接信令服务器
-        </button>
-        <button
-          onClick={connectToDevice}
-          disabled={!wsRef.current || connected}
-          style={{ padding: '8px 16px' }}
-        >
-          连接设备
-        </button>
+        <p>设备ID: {deviceId}</p>
+        <p>连接方式: {connected ? 'P2P DataChannel' : '未连接'}</p>
       </div>
 
       <div style={{
@@ -235,7 +301,41 @@ function App() {
 
       <hr style={{ margin: '30px 0' }} />
 
-      <h2>API调用测试</h2>
+      <h2>DataChannel Fetch 测试（真实HTTP请求）</h2>
+      <div style={{ marginBottom: '20px' }}>
+        <button
+          onClick={() => callHTTPAPI('http://httpbin.org/get', 'GET')}
+          disabled={!connected || loading}
+          style={{ padding: '8px 16px', marginRight: '10px' }}
+        >
+          GET 请求测试
+        </button>
+        <button
+          onClick={() => callHTTPAPI('http://httpbin.org/post', 'POST', { message: 'Hello from DataChannel!' })}
+          disabled={!connected || loading}
+          style={{ padding: '8px 16px', marginRight: '10px' }}
+        >
+          POST 请求测试
+        </button>
+        <button
+          onClick={() => callHTTPAPI('http://httpbin.org/put', 'PUT', { data: 'Updated' })}
+          disabled={!connected || loading}
+          style={{ padding: '8px 16px', marginRight: '10px' }}
+        >
+          PUT 请求测试
+        </button>
+        <button
+          onClick={() => callHTTPAPI('http://httpbin.org/delete', 'DELETE')}
+          disabled={!connected || loading}
+          style={{ padding: '8px 16px' }}
+        >
+          DELETE 请求测试
+        </button>
+      </div>
+
+      <hr style={{ margin: '30px 0' }} />
+
+      <h2>API调用测试（设备本地API）</h2>
       <div style={{ marginBottom: '20px' }}>
         <button
           onClick={() => callAPI('/info')}
