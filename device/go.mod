@@ -5,6 +5,7 @@ go 1.21
 require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/pion/webrtc/v3 v3.2.24
+	github.com/yapingcat/gomedia v0.0.0-20240906162731-17feea57090c
 )
 
 require (

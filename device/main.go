@@ -7,7 +7,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -104,7 +107,10 @@ func main() {
 
 	// 保持程序运行，让WebRTC连接继续工作
 	log.Println("Device is running. Press Ctrl+C to exit.")
-	select {}
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+	log.Println("Shutting down.")
 }
 
 func handleOffer(conn *websocket.Conn, msg *Message, config webrtc.Configuration) {
@@ -114,6 +120,9 @@ func handleOffer(conn *websocket.Conn, msg *Message, config webrtc.Configuration
 		log.Println("Failed to create peer connection:", err)
 		return
 	}
+
+	// 媒体推流共享状态
+	ms := newMediaState()
 
 	// 监听数据通道（由frontend创建）
 	peerConnection.OnDataChannel(func(d *webrtc.DataChannel) {
@@ -129,6 +138,18 @@ func handleOffer(conn *websocket.Conn, msg *Message, config webrtc.Configuration
 			err := json.Unmarshal(msg.Data, &rawRequest)
 			if err != nil {
 				log.Printf("Failed to parse request: %s\n", err)
+				return
+			}
+
+			// 媒体控制命令
+			if _, ok := rawRequest["mediaAction"]; ok {
+				var cmd MediaCommand
+				if err := json.Unmarshal(msg.Data, &cmd); err != nil {
+					log.Printf("Failed to parse media command: %s\n", err)
+					return
+				}
+				log.Printf("Received media command: %s\n", cmd.MediaAction)
+				handleMediaCommand(d, &cmd, ms)
 				return
 			}
 
@@ -217,6 +238,33 @@ func handleOffer(conn *websocket.Conn, msg *Message, config webrtc.Configuration
 		log.Println("Failed to set remote description:", err)
 		return
 	}
+
+	// 创建 H.264 视频轨道
+	vt, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264},
+		"video", "device-media",
+	)
+	if err != nil {
+		log.Println("Failed to create video track:", err)
+		return
+	}
+	ms.videoTrack = vt
+
+	rtpSender, err := peerConnection.AddTrack(vt)
+	if err != nil {
+		log.Println("Failed to add video track:", err)
+		return
+	}
+
+	// 排空 RTCP 包
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			if _, _, err := rtpSender.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
 
 	// 创建应答
 	answer, err := peerConnection.CreateAnswer(nil)

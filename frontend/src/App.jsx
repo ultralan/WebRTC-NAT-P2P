@@ -9,10 +9,17 @@ function App() {
   const [status, setStatus] = useState('未连接')
   const [apiResponse, setApiResponse] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [streaming, setStreaming] = useState(false)
+  const [mediaFiles, setMediaFiles] = useState([])
+  const [paused, setPaused] = useState(false)
+  const [playbackSpeed, setPlaybackSpeed] = useState(1.0)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [totalDuration, setTotalDuration] = useState(0)
 
   const wsRef = useRef(null)
   const pcRef = useRef(null)
   const dataChannelRef = useRef(null)
+  const videoRef = useRef(null)
   const clientId = useRef('frontend-' + Math.random().toString(36).substr(2, 9))
 
   useEffect(() => {
@@ -120,6 +127,40 @@ function App() {
           return
         }
 
+        // 媒体控制响应
+        if (response.mediaResponse) {
+          if (response.status === 'list') {
+            setMediaFiles(response.data || [])
+            addMessage('媒体', `文件列表: ${(response.data || []).join(', ')}`)
+          } else if (response.status === 'playing') {
+            setStreaming(true)
+            addMessage('媒体', response.message)
+          } else if (response.status === 'stopped') {
+            setStreaming(false)
+            addMessage('媒体', response.message)
+          } else if (response.status === 'progress') {
+            const d = response.data
+            setCurrentTime(d.current)
+            setTotalDuration(d.total)
+            setPaused(d.paused)
+            setPlaybackSpeed(d.speed)
+          } else if (response.status === 'paused') {
+            setPaused(true)
+            addMessage('媒体', response.message)
+          } else if (response.status === 'resumed') {
+            setPaused(false)
+            addMessage('媒体', response.message)
+          } else if (response.status === 'seeked') {
+            addMessage('媒体', response.message)
+          } else if (response.status === 'speed') {
+            addMessage('媒体', response.message)
+          } else if (response.status === 'error') {
+            setStreaming(false)
+            addMessage('媒体错误', response.message)
+          }
+          return
+        }
+
         if (response.id) {
           // 旧的 API 响应
           setApiResponse(response)
@@ -153,6 +194,17 @@ function App() {
     dataChannel.onclose = () => {
       setConnected(false)
       setStatus('数据通道已关闭')
+    }
+
+    // 添加 video transceiver（recvonly，用于接收设备推送的视频流）
+    pc.addTransceiver('video', { direction: 'recvonly' })
+
+    // 接收远端视频轨道
+    pc.ontrack = (event) => {
+      console.log('Received remote track:', event.track.kind)
+      if (event.track.kind === 'video' && videoRef.current) {
+        videoRef.current.srcObject = event.streams[0]
+      }
     }
 
     // 处理ICE候选
@@ -212,6 +264,24 @@ function App() {
       setLoading(false)
       alert(`API调用失败: ${error.message}`)
     }
+  }
+
+  const sendMediaCommand = (action, file = '', extra = {}) => {
+    if (!dataChannelRef.current) {
+      alert('数据通道未连接')
+      return
+    }
+    const cmd = { mediaAction: action, ...extra }
+    if (file) cmd.file = file
+    dataChannelRef.current.send(JSON.stringify(cmd))
+    addMessage('媒体命令', `${action} ${file}`)
+  }
+
+  const formatTime = (ms) => {
+    const totalSec = Math.floor(ms / 1000)
+    const min = Math.floor(totalSec / 60)
+    const sec = totalSec % 60
+    return `${min}:${sec.toString().padStart(2, '0')}`
   }
 
   // 使用 dataChannelFetch 调用真实的 HTTP API
@@ -332,6 +402,91 @@ function App() {
           DELETE 请求测试
         </button>
       </div>
+
+      <hr style={{ margin: '30px 0' }} />
+
+      <h2>媒体播放（WebRTC 视频流）</h2>
+      <div style={{ marginBottom: '20px' }}>
+        <button
+          onClick={() => sendMediaCommand('list')}
+          disabled={!connected}
+          style={{ padding: '8px 16px', marginRight: '10px' }}
+        >
+          列出媒体文件
+        </button>
+        {mediaFiles.map((file) => (
+          <button
+            key={file}
+            onClick={() => sendMediaCommand('play', file)}
+            disabled={!connected || streaming}
+            style={{ padding: '8px 16px', marginRight: '10px' }}
+          >
+            播放 {file}
+          </button>
+        ))}
+        <button
+          onClick={() => sendMediaCommand('stop')}
+          disabled={!connected || !streaming}
+          style={{ padding: '8px 16px' }}
+        >
+          停止播放
+        </button>
+      </div>
+      <div style={{ marginBottom: '20px' }}>
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          style={{
+            width: '640px',
+            maxWidth: '100%',
+            backgroundColor: '#000',
+            display: 'block'
+          }}
+        />
+      </div>
+      {streaming && (
+        <div style={{ marginBottom: '20px', maxWidth: '640px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+            <button
+              onClick={() => sendMediaCommand(paused ? 'resume' : 'pause')}
+              disabled={!connected}
+              style={{ padding: '8px 16px' }}
+            >
+              {paused ? '恢复' : '暂停'}
+            </button>
+            <select
+              value={playbackSpeed}
+              onChange={(e) => {
+                const rate = parseFloat(e.target.value)
+                setPlaybackSpeed(rate)
+                sendMediaCommand('speed', '', { rate })
+              }}
+              style={{ padding: '6px' }}
+            >
+              <option value={0.5}>0.5x</option>
+              <option value={1.0}>1.0x</option>
+              <option value={1.5}>1.5x</option>
+              <option value={2.0}>2.0x</option>
+            </select>
+            <span style={{ fontSize: '14px' }}>
+              {formatTime(currentTime)} / {formatTime(totalDuration)}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={totalDuration}
+            value={currentTime}
+            onChange={(e) => {
+              const pos = parseInt(e.target.value, 10)
+              setCurrentTime(pos)
+              sendMediaCommand('seek', '', { position: pos })
+            }}
+            style={{ width: '100%' }}
+          />
+        </div>
+      )}
 
       <hr style={{ margin: '30px 0' }} />
 
